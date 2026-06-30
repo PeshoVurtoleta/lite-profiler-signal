@@ -3,6 +3,17 @@
 All notable changes to `@zakkster/lite-profiler-signal` are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-06-30
+
+### Changed
+- Raised the `@zakkster/lite-signal` peer range to `>=1.3.0 || >=1.4.0-beta.1` (was `^1.2.0`). 1.3.0 is the current stable floor; the range also admits the 1.4.0 stable candidate, published as `1.4.0-beta.1`.
+
+### Verified
+- The full test suite -- including the anti-trap pool-flatness proof -- passes unchanged against both `lite-signal` 1.3.0 and 1.4.0-beta.1. No source or API change in this package: the `stats()` counters and flush semantics the anti-trap test relies on are identical across the line.
+
+### Note
+- Installing the whole stack on a 1.4.0 *prerelease* can surface peer warnings from `lite-throttle` / `lite-watch-ex`, which still declare stable-only (`^1.x`) lite-signal peers. Use an npm `overrides` block or `--legacy-peer-deps` until those siblings bump; this package's own peer already admits the prerelease.
+
 ## [1.0.0] - 2026-06-30
 
 Initial release. Reactive boundary for `@zakkster/lite-profiler`.

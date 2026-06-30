@@ -51,7 +51,7 @@ A full reactive derivation, 5000 times, allocates nothing on the graph.
 npm install @zakkster/lite-profiler-signal @zakkster/lite-signal
 ```
 
-`@zakkster/lite-signal` (`^1.2.0`) is a **peer dependency** -- the bridge shares your registry, so the signals it hands you are the same kind your own effects already track. `@zakkster/lite-profiler`, `@zakkster/lite-stats-math`, `@zakkster/lite-throttle`, and `@zakkster/lite-watch-ex` are regular dependencies.
+`@zakkster/lite-signal` (`>=1.3.0`, including the `1.4.0` beta line) is a **peer dependency** -- the bridge shares your registry, so the signals it hands you are the same kind your own effects already track. `@zakkster/lite-profiler`, `@zakkster/lite-stats-math`, `@zakkster/lite-throttle`, and `@zakkster/lite-watch-ex` are regular dependencies.
 
 > **Resolution note:** the telemetry trio (`lite-ring-buffer`, `lite-stats-math`, `lite-canvas-graph`) must be at **>= 1.0.1** for native Node ESM. Earlier `1.0.0` tarballs shipped an `exports` map missing the `./` target prefix, which bundlers tolerate but Node rejects. `lite-profiler` already pins the fixed range.
 
@@ -195,7 +195,7 @@ Three suites:
 
 | package                       | range            | role  |
 | ----------------------------- | ---------------- | ----- |
-| `@zakkster/lite-signal`       | `^1.2.0`         | peer  |
+| `@zakkster/lite-signal`       | `>=1.3.0 \|\| >=1.4.0-beta.1` | peer |
 | `@zakkster/lite-profiler`     | `^1.0.0`         | dep   |
 | `@zakkster/lite-stats-math`   | `^1.0.1`         | dep   |
 | `@zakkster/lite-throttle`     | `^1.1.0`         | dep   |

@@ -74,7 +74,7 @@ view.onRegression("render", (e) =>
 
 npm install @zakkster/lite-profiler-signal @zakkster/lite-signal
 
-Peer: @zakkster/lite-signal ^1.2.0 (shared registry).
+Peer: @zakkster/lite-signal >=1.3.0 (incl. the 1.4.0 beta line) (shared registry).
 Dependencies: @zakkster/lite-profiler, @zakkster/lite-stats-math, @zakkster/lite-throttle, @zakkster/lite-watch-ex.
 
 ## Conventions

@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-profiler-signal",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Reactive boundary for @zakkster/lite-profiler: lifts coarse frame and per-phase telemetry into lite-signal signals via a throttled pulse, with predicate watchers for jank and per-phase regression. The hot path stays allocation-free and signal-free -- the reactive-profiler trap. Mirrors lite-camera -> lite-camera-max.",
   "type": "module",
   "main": "./index.js",
@@ -48,7 +48,7 @@
     "@zakkster/lite-watch-ex": "^1.1.0"
   },
   "peerDependencies": {
-    "@zakkster/lite-signal": "^1.2.0"
+    "@zakkster/lite-signal": ">=1.3.0 || >=1.4.0-beta.1"
   },
   "devDependencies": {
     "esbuild": "^0.24.0"
