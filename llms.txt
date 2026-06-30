@@ -1,0 +1,83 @@
+# @zakkster/lite-profiler-signal
+
+> Reactive boundary for @zakkster/lite-profiler. Lifts coarse frame and per-phase
+> telemetry into @zakkster/lite-signal signals via a throttled pulse, with predicate
+> watchers for jank and per-phase regression. The Profiler hot path stays
+> allocation-free and writes no signals (the reactive-profiler trap). Mirrors the
+> @zakkster/lite-camera -> @zakkster/lite-camera-max relationship: a thin reactive
+> wrapper over an imperative engine.
+
+## Mental model
+
+- The imperative Profiler records frame and phase times into zero-GC ring buffers.
+- This bridge NEVER subscribes to or writes a signal on the per-frame path.
+- pulse() (called once per frame) does exactly one thing: increments an internal
+  integer `tick` signal.
+- A lite-throttle window over `tick` gates an effect that, at most once per window
+  (~10Hz by default), reads the ring buffers via lite-stats-math + lite-profiler's
+  FrameHistogram and writes a BOUNDED, FIXED set of output signals inside batch().
+- Result: per-frame graph cost is O(1) regardless of phase count or frame rate, and
+  no graph nodes are created per frame. Proven by test/antitrap.test.js (5000 frames,
+  registry node counts and pool capacity flat).
+
+## API
+
+createProfilerView(profiler, options?) -> ProfilerView
+  options: { intervalMs = 100, raf = false, leading = true, trailing = true }
+
+Signals (read-only; never .set() them yourself):
+  fps, frameAvg, frameP99, frameMax, jank, spike : Signal<number>
+  frameClass : Signal<"steady" | "spiking" | "throttled">
+  phases : Record<tag, { avg: Signal<number>, p99: Signal<number>, last: Signal<number> }>
+  phase(tag) -> PhaseSignals | null
+
+Methods:
+  pulse()            call once per frame after profiler.endFrame()
+  flush()            force any pending throttled recompute to run now
+  attach()/detach()  drive pulse() on requestAnimationFrame (browser only); attach() returns a detacher
+  dispose()          idempotent teardown of throttle, watchers, and all signals
+
+Detectors (return disposers):
+  onJank(handler)                              fires when frameClass leaves "steady"
+  onRegression(tag, handler, { factor=1.5, window=8 })
+                                               fires when a phase p99 exceeds factor x rolling baseline
+                                               handler receives { tag, p99, baseline }
+
+## Usage
+
+```js
+import { Profiler } from "@zakkster/lite-profiler";
+import { createProfilerView } from "@zakkster/lite-profiler-signal";
+import { effect } from "@zakkster/lite-signal";
+
+const profiler = new Profiler(512, ["update", "render"]);
+const view = createProfilerView(profiler);
+
+// In your game loop:
+function frame() {
+  profiler.beginFrame();
+  profiler.begin("update"); /* ... */ profiler.end("update");
+  profiler.begin("render"); /* ... */ profiler.end("render");
+  profiler.endFrame();
+  view.pulse();            // one tick set; recompute is throttled internally
+  requestAnimationFrame(frame);
+}
+
+// React to telemetry anywhere, with any lite-signal consumer:
+effect(() => { hudEl.textContent = view.fps().toFixed(0) + " fps"; });
+view.onJank((cls) => console.warn("frame budget missed:", cls));
+view.onRegression("render", (e) =>
+  console.warn(`render p99 ${e.p99.toFixed(1)}ms vs baseline ${e.baseline.toFixed(1)}ms`));
+```
+
+## Install
+
+npm install @zakkster/lite-profiler-signal @zakkster/lite-signal
+
+Peer: @zakkster/lite-signal ^1.2.0 (shared registry).
+Dependencies: @zakkster/lite-profiler, @zakkster/lite-stats-math, @zakkster/lite-throttle, @zakkster/lite-watch-ex.
+
+## Conventions
+
+ESM only. sideEffects:false. node:test only. ASCII source. Zero hot-path allocations.
+Copyright (c) Zahary Shinikchiev <shinikchiev@yahoo.com>. MIT.
