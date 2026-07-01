@@ -23,12 +23,14 @@
 ## API
 
 createProfilerView(profiler, options?) -> ProfilerView
-  options: { intervalMs = 100, raf = false, leading = true, trailing = true }
+  options: { intervalMs = 100, raf = false, leading = true, trailing = true,
+             label?, engine?, budgetMs?, tolerances? }
 
 Signals (read-only; never .set() them yourself):
   fps, frameAvg, frameP99, frameMax, jank, spike : Signal<number>
   frameClass : Signal<"steady" | "spiking" | "throttled">
   phases : Record<tag, { avg: Signal<number>, p99: Signal<number>, last: Signal<number> }>
+  regressed : Signal<boolean>   (live: window past the armed baseline; false when unarmed)
   phase(tag) -> PhaseSignals | null
 
 Methods:
@@ -36,12 +38,22 @@ Methods:
   flush()            force any pending throttled recompute to run now
   attach()/detach()  drive pulse() on requestAnimationFrame (browser only); attach() returns a detacher
   dispose()          idempotent teardown of throttle, watchers, and all signals
+  summary(meta?)                 -> CaptureSummary snapshot of the current window (JSON, self-describing)
+  setBaseline(summary|null)      arm/clear a baseline for the live regressed gate
+  getBaseline()                  -> the armed baseline or null
+  setTolerances(map)             replace the gate/report tolerance map (path -> fraction)
+  captureBaseline(meta?)         snapshot current window and arm it as baseline; returns it
+  checkAgainstBaseline(tol?)     -> RegressionReport vs the armed baseline (null if none)
 
 Detectors (return disposers):
   onJank(handler)                              fires when frameClass leaves "steady"
   onRegression(tag, handler, { factor=1.5, window=8 })
                                                fires when a phase p99 exceeds factor x rolling baseline
                                                handler receives { tag, p99, baseline }
+  onBaselineRegression(handler)                fires once when the window crosses within-budget -> regressed
+                                               vs an armed baseline; handler receives the RegressionReport.
+                                               Metric paths: frame.<m> or phase.<tag>.<m>; fps higher-better.
+                                               Live gate is zero-alloc; summary()/checkAgainstBaseline() allocate on demand.
 
 ## Usage
 

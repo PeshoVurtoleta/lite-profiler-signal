@@ -112,6 +112,10 @@ detach();
 | `raf`        | `false` | align the pulse to `requestAnimationFrame` instead of a timer  |
 | `leading`    | `true`  | emit on the leading edge of each window                        |
 | `trailing`   | `true`  | emit the trailing value at window end (so the last frame lands)|
+| `label`      | -       | default workload label stamped into `summary()` output         |
+| `engine`     | -       | default engine label stamped into summaries                    |
+| `budgetMs`   | `16.67` | informational frame budget recorded in summaries               |
+| `tolerances` | avg/p99 | default regression tolerances (metric path -> fraction)        |
 
 Throws `TypeError` if `profiler` is not a `Profiler` instance.
 
@@ -129,6 +133,7 @@ Read them by calling them (`view.fps()`); track them inside any `effect`, `compu
 | `spike`              | `Signal<number>`                              | fraction of frames >= 33ms                |
 | `frameClass`         | `Signal<"steady" \| "spiking" \| "throttled">`| classifier verdict                        |
 | `phases[tag]`        | `{ avg, p99, last }` of `Signal<number>`      | per-phase stats (ms)                      |
+| `regressed`          | `Signal<boolean>`                             | live: window past the armed baseline? (`false` when unarmed) |
 
 `view.phase(tag)` returns the bundle for a registered phase, or `null`.
 
@@ -141,6 +146,12 @@ Read them by calling them (`view.fps()`); track them inside any `effect`, `compu
 | `attach()`           | Drive `pulse()` on `requestAnimationFrame`. Returns a detacher. Browser only.|
 | `detach()`           | Stop the `attach()` driver.                                                 |
 | `dispose()`          | Idempotent. Tears down the throttle, all watchers, and every signal.        |
+| `summary(meta?)`     | Snapshot the current window as a self-describing `CaptureSummary` (JSON).    |
+| `setBaseline(s\|null)` | Arm (or clear) a baseline `CaptureSummary` for the live `regressed` gate.  |
+| `getBaseline()`      | The armed baseline, or `null`.                                              |
+| `setTolerances(t)`   | Replace the tolerance map used by the gate and `checkAgainstBaseline()`.    |
+| `captureBaseline(meta?)` | Snapshot the current window and arm it as the baseline. Returns it.     |
+| `checkAgainstBaseline(t?)` | On-demand structured `RegressionReport` vs the baseline (`null` if none). |
 
 ### Detectors
 
@@ -160,6 +171,36 @@ onRegression(
 ```
 Fires when a phase's p99 exceeds `factor` times the rolling mean of its previous `window` samples. Catches "this phase quietly got 2x slower" without you picking an absolute threshold.
 
+```ts
+onBaselineRegression(handler: (report: RegressionReport | null) => void): () => void;
+```
+Fires once each time live telemetry crosses from within-budget to **regressed vs an armed baseline**. Unlike `onRegression` (which watches a phase against its own *rolling* history), this watches the whole window against a *fixed* baseline you captured earlier -- e.g. a saved run on a previous engine version. The handler receives the full `checkAgainstBaseline()` report at the moment of the transition.
+
+### Baseline regression: verifying across engine versions
+
+`onRegression` catches drift *within* a session. Baseline regression catches drift *between* builds. Because the underlying profiler is engine-agnostic, you capture one workload's summary on the current engine, save it as JSON, then arm it while running the same workload on the next engine -- and the `regressed` signal (and `onBaselineRegression`) tell you the moment it slips. This is how the bridge turns lite-profiler's comparison core into a live cross-version guard for lite-signal itself.
+
+```js
+import { Profiler } from '@zakkster/lite-profiler';
+import { createProfilerView } from '@zakkster/lite-profiler-signal';
+
+const view = createProfilerView(profiler, {
+  label: 'fan-out-1k',
+  engine: 'lite-signal@1.4.0-beta.1',
+  tolerances: { 'frame.avg': 0.10, 'frame.p99': 0.10, 'phase.propagate.p99': 0.15 }
+});
+
+// arm a baseline captured earlier on the previous engine (loaded from JSON)
+view.setBaseline(JSON.parse(baselineJson));   // a summary from lite-signal@1.3.0
+
+view.onBaselineRegression((report) => {
+  console.warn('slower than the 1.3.0 baseline:', report.regressions);
+});
+// ...run the workload, pulse() each frame; regressed() flips true if it slips.
+```
+
+Metric paths are `frame.<metric>` or `phase.<tag>.<metric>`; `fps` is higher-is-better and gated in the opposite direction automatically. The live `regressed` gate is zero-allocation (pre-parsed tolerances, scalar reads on the recompute path); the full structured `RegressionReport` is built only on demand or at a transition.
+
 ---
 
 ## How it works
@@ -169,12 +210,13 @@ Fires when a phase's p99 exceeds `factor` times the rolling mean of its previous
                                                           |
   at most ~10Hz:                                          v
                   recompute():  read ring buffers (StatsMath + FrameHistogram)
-                                batch(() => set ~7 + 3 * phases signals)
+                                batch(() => set ~8 + 3 * phases signals)
 ```
 
 - The **only** per-frame graph activity is `tick.set()` and the throttle's internal lockout check -- both allocation-free (`lite-throttle` makes no per-change allocations).
 - The recompute reuses pre-allocated scratch objects and only ever `.set()`s signals that already exist, inside a single `batch()` so subscribers wake once.
-- `onJank` is `lite-watch-ex`'s `watchChanged` over `frameClass`; `onRegression` is `watchPrevious` (rolling history) over a phase's `p99`. No extra polling loop.
+- `onJank` is `lite-watch-ex`'s `watchChanged` over `frameClass`; `onRegression` is `watchPrevious` (rolling history) over a phase's `p99`; `onBaselineRegression` is `watchChanged` over the `regressed` signal. No extra polling loop.
+- Baseline gating stays on the O(1) path: tolerances are pre-parsed into scalar gates when a baseline is armed, and the recompute sets `regressed` from scalar reads only. `summary()` / `checkAgainstBaseline()` (which build objects) run only when you call them.
 
 ---
 
@@ -184,10 +226,11 @@ Fires when a phase's p99 exceeds `factor` times the rolling mean of its previous
 npm test          # node --test, zero external test deps
 ```
 
-Three suites:
+Four suites:
 - **`view`** -- telemetry is lifted correctly; `frameClass` flips under load; `dispose()` is idempotent.
 - **`antitrap`** -- 5000 full recomputes create zero graph nodes and never grow the pool (the headline guarantee).
 - **`detectors`** -- `onJank` edge-triggers on leaving `STEADY`; `onRegression` fires on a phase p99 spike over its rolling baseline; disposers stop delivery.
+- **`baseline`** -- the gate does not false-positive on equal performance and does fire on a real slowdown; `fps` is gated higher-is-better; baseline-missing metrics are skipped; the live `regressed` signal agrees with the on-demand `checkAgainstBaseline()` report; `summary()` equals the reactive signals; and 2000 gated frames still create zero graph nodes.
 
 ---
 
@@ -196,7 +239,7 @@ Three suites:
 | package                       | range            | role  |
 | ----------------------------- | ---------------- | ----- |
 | `@zakkster/lite-signal`       | `>=1.3.0 \|\| >=1.4.0-beta.1` | peer |
-| `@zakkster/lite-profiler`     | `^1.0.0`         | dep   |
+| `@zakkster/lite-profiler`     | `^1.1.0`         | dep   |
 | `@zakkster/lite-stats-math`   | `^1.0.1`         | dep   |
 | `@zakkster/lite-throttle`     | `^1.1.0`         | dep   |
 | `@zakkster/lite-watch-ex`     | `^1.1.0`         | dep   |

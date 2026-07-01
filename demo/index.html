@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>lite-profiler-signal // reactive baseline gate</title>
+
+    <script type="importmap">
+{
+  "imports": {
+    "@zakkster/lite-profiler-signal": "../index.js",
+    "@zakkster/lite-profiler": "../node_modules/@zakkster/lite-profiler/index.js",
+    "@zakkster/lite-signal": "../node_modules/@zakkster/lite-signal/Signal.js",
+    "@zakkster/lite-throttle": "../node_modules/@zakkster/lite-throttle/index.js",
+    "@zakkster/lite-watch-ex": "../node_modules/@zakkster/lite-watch-ex/index.js",
+    "@zakkster/lite-stats-math": "../node_modules/@zakkster/lite-stats-math/StatsMath.js",
+    "@zakkster/lite-ring-buffer": "../node_modules/@zakkster/lite-ring-buffer/RingBuffer.js",
+    "@zakkster/lite-canvas-graph": "../node_modules/@zakkster/lite-canvas-graph/CanvasGraph.js"
+  }
+}
+
+    </script>
+
+    <style>
+        :root {
+            --bg: #060d0a;
+            --bg: oklch(0.16 0.02 165);
+            --panel: #0a1712;
+            --panel: oklch(0.21 0.025 165);
+            --edge: #11271d;
+            --edge: oklch(0.30 0.04 165);
+            --phosphor: #00ffc6;
+            --phosphor: oklch(0.86 0.16 168);
+            --phosphor-dim: #1f7d63;
+            --phosphor-dim: oklch(0.56 0.09 168);
+            --ink: #bfe9dc;
+            --ink: oklch(0.88 0.05 168);
+            --muted: #5d8579;
+            --muted: oklch(0.62 0.04 168);
+            --amber: #ffb300;
+            --amber: oklch(0.82 0.16 80);
+            --red: #ff4d4d;
+            --red: oklch(0.68 0.20 25);
+            --grid: rgba(0, 255, 198, 0.06);
+            --radius: 0.5rem;
+            --gap: 0.75rem;
+            font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            height: 100%;
+            margin: 0;
+        }
+
+        body {
+            background-color: var(--bg);
+            background-image: repeating-linear-gradient(0deg, var(--grid) 0, var(--grid) 1px, transparent 1px, transparent 2.5rem),
+            repeating-linear-gradient(90deg, var(--grid) 0, var(--grid) 1px, transparent 1px, transparent 2.5rem);
+            color: var(--ink);
+            font-size: 14px;
+            line-height: 1.4;
+        }
+
+        .app {
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            gap: var(--gap);
+            height: 100%;
+            padding: var(--gap);
+            max-width: 1500px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 1rem;
+            border-bottom: 1px solid var(--edge);
+            padding-bottom: 0.5rem;
+        }
+
+        header h1 {
+            font-size: 1rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            margin: 0;
+            color: var(--phosphor);
+            text-shadow: 0 0 8px var(--phosphor-dim);
+        }
+
+        header h1 span {
+            color: var(--muted);
+            text-shadow: none;
+        }
+
+        .run {
+            font-size: 0.75rem;
+            letter-spacing: 0.12em;
+            padding: 0.15rem 0.6rem;
+            border: 1px solid var(--edge);
+            border-radius: 999px;
+            color: var(--muted);
+        }
+
+        .run[data-run="running"] {
+            color: var(--phosphor);
+            border-color: var(--phosphor-dim);
+        }
+
+        .run[data-run="paused"] {
+            color: var(--muted);
+        }
+
+        .run[data-run="regressed"] {
+            color: var(--red);
+            border-color: var(--red);
+        }
+
+        main {
+            display: grid;
+            grid-template-columns: 1fr 24rem;
+            gap: var(--gap);
+            min-height: 0;
+        }
+
+        .stage {
+            position: relative;
+            background: #040a08;
+            border: 1px solid var(--edge);
+            border-radius: var(--radius);
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        #scope {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .stage .tag {
+            position: absolute;
+            top: 0.5rem;
+            left: 0.6rem;
+            font-size: 0.7rem;
+            letter-spacing: 0.14em;
+            color: var(--phosphor-dim);
+            pointer-events: none;
+        }
+
+        .legend {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.6rem;
+            display: flex;
+            gap: 0.9rem;
+            font-size: 0.62rem;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            pointer-events: none;
+        }
+
+        .legend i {
+            display: inline-block;
+            width: 0.8rem;
+            height: 0.14rem;
+            margin-right: 0.3rem;
+            vertical-align: middle;
+        }
+
+        .legend .live i {
+            background: var(--phosphor);
+        }
+
+        .legend .base i {
+            background: var(--muted);
+        }
+
+        .legend .budget i {
+            background: var(--amber);
+        }
+
+        .side {
+            display: flex;
+            flex-direction: column;
+            gap: var(--gap);
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--edge);
+            border-radius: var(--radius);
+            padding: 0.7rem 0.8rem;
+        }
+
+        .panel > h2 {
+            font-size: 0.68rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin: 0 0 0.55rem;
+            font-weight: 600;
+        }
+
+        .gate {
+            text-align: center;
+            padding-bottom: 0.85rem;
+        }
+
+        .gate .state {
+            font-size: 1.9rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            line-height: 1.1;
+        }
+
+        .gate .sub {
+            font-size: 0.72rem;
+            color: var(--muted);
+            margin-top: 0.3rem;
+            min-height: 1rem;
+        }
+
+        .gate .signal {
+            font-size: 0.58rem;
+            letter-spacing: 0.14em;
+            color: var(--muted);
+            margin-top: 0.5rem;
+        }
+
+        .gate .signal b {
+            color: var(--phosphor-dim);
+        }
+
+        .gate[data-state="idle"] .state {
+            color: var(--muted);
+        }
+
+        .gate[data-state="pass"] .state {
+            color: var(--phosphor);
+            text-shadow: 0 0 12px var(--phosphor-dim);
+        }
+
+        .gate[data-state="regressed"] .state {
+            color: var(--red);
+            text-shadow: 0 0 12px var(--red);
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.5rem;
+        }
+
+        .metric {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .metric .v {
+            font-size: 1.25rem;
+            color: var(--ink);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .metric .v small {
+            font-size: 0.65rem;
+            color: var(--muted);
+            margin-left: 0.15rem;
+        }
+
+        .metric .k {
+            font-size: 0.62rem;
+            letter-spacing: 0.1em;
+            color: var(--muted);
+            text-transform: uppercase;
+        }
+
+        .flags {
+            display: flex;
+            gap: 1.1rem;
+            margin-top: 0.6rem;
+            font-size: 0.72rem;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .flags b {
+            color: var(--ink);
+        }
+
+        .flags .cls {
+            margin-left: auto;
+            letter-spacing: 0.06em;
+        }
+
+        .flags .cls[data-c="steady"] {
+            color: var(--phosphor);
+        }
+
+        .flags .cls[data-c="spiking"] {
+            color: var(--amber);
+        }
+
+        .flags .cls[data-c="throttled"] {
+            color: var(--red);
+        }
+
+        .baseinfo {
+            font-size: 0.68rem;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .baseinfo b {
+            color: var(--phosphor-dim);
+        }
+
+        .baseinfo .none {
+            color: var(--muted);
+            font-style: italic;
+        }
+
+        .log {
+            font-size: 0.66rem;
+            max-height: 9rem;
+            overflow: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+        }
+
+        .log .line {
+            display: flex;
+            gap: 0.5rem;
+            white-space: nowrap;
+        }
+
+        .log .t {
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .log .m {
+            color: var(--ink);
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .log .line[data-k="regressed"] .m {
+            color: var(--red);
+        }
+
+        .log .line[data-k="recovered"] .m {
+            color: var(--phosphor);
+        }
+
+        .log .line[data-k="info"] .m {
+            color: var(--phosphor-dim);
+        }
+
+        .log .empty {
+            color: var(--muted);
+            font-style: italic;
+        }
+
+        footer {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1rem;
+            border-top: 1px solid var(--edge);
+            padding-top: 0.6rem;
+        }
+
+        .ctl {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.74rem;
+            color: var(--muted);
+        }
+
+        .ctl label {
+            letter-spacing: 0.08em;
+        }
+
+        input[type="range"] {
+            width: 12rem;
+            accent-color: var(--phosphor);
+        }
+
+        .count {
+            color: var(--phosphor);
+            font-variant-numeric: tabular-nums;
+            min-width: 3.6rem;
+            text-align: right;
+        }
+
+        button {
+            font-family: inherit;
+            font-size: 0.72rem;
+            letter-spacing: 0.08em;
+            color: var(--ink);
+            background: var(--panel);
+            border: 1px solid var(--edge);
+            border-radius: 0.35rem;
+            padding: 0.4rem 0.7rem;
+            cursor: pointer;
+        }
+
+        @media (hover: hover) {
+            button:hover {
+                border-color: var(--phosphor-dim);
+                color: var(--phosphor);
+            }
+        }
+
+        button:active {
+            transform: translateY(1px);
+        }
+
+        button.primary {
+            color: var(--phosphor);
+            border-color: var(--phosphor-dim);
+        }
+
+        button.warn {
+            color: var(--amber);
+            border-color: color-mix(in oklch, var(--amber) 40%, var(--edge));
+        }
+
+        .hint {
+            font-size: 0.66rem;
+            color: var(--muted);
+            max-width: 22rem;
+        }
+
+        .hint b {
+            color: var(--phosphor-dim);
+        }
+
+        code {
+            color: var(--phosphor-dim);
+        }
+    </style>
+</head>
+<body>
+<div class="app">
+    <header>
+        <h1>lite-profiler-signal <span>// reactive baseline gate</span></h1>
+        <div class="run" id="run" data-run="running">RUNNING</div>
+    </header>
+
+    <main>
+        <section class="stage">
+            <canvas id="scope"></canvas>
+            <div class="tag">FRAME-TIME OSCILLOSCOPE &mdash; live trace vs baseline p99</div>
+            <div class="legend">
+                <span class="live"><i></i>live</span>
+                <span class="base"><i></i>baseline p99</span>
+                <span class="budget"><i></i>16.7ms</span>
+            </div>
+        </section>
+
+        <aside class="side">
+            <div class="panel gate" id="gate" data-state="idle">
+                <div class="state" id="gateState">NO BASELINE</div>
+                <div class="sub" id="gateSub">capture a baseline, then change the load</div>
+                <div class="signal">driven by the reactive <b>regressed</b> signal</div>
+            </div>
+
+            <div class="panel">
+                <h2>Reactive telemetry (signals)</h2>
+                <div class="metrics">
+                    <div class="metric"><span class="v"><span id="fps">0</span><small>fps</small></span><span class="k">avg</span>
+                    </div>
+                    <div class="metric"><span class="v"><span id="avg">0</span><small>ms</small></span><span class="k">frame avg</span>
+                    </div>
+                    <div class="metric"><span class="v"><span id="p99">0</span><small>ms</small></span><span class="k">p99</span>
+                    </div>
+                    <div class="metric"><span class="v"><span id="fmax">0</span><small>ms</small></span><span class="k">max</span>
+                    </div>
+                </div>
+                <div class="flags">
+                    <span>jank <b id="jank">0%</b></span>
+                    <span>spike <b id="spike">0%</b></span>
+                    <span class="cls" id="cls" data-c="steady">steady</span>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Captured baseline</h2>
+                <div class="baseinfo" id="baseinfo"><span class="none">none captured</span></div>
+            </div>
+
+            <div class="panel">
+                <h2>onBaselineRegression log</h2>
+                <div class="log" id="log"><span class="empty">no crossings yet</span></div>
+            </div>
+
+            <div class="panel">
+                <p class="hint">Every panel here is bound with <code>effect()</code> over the view's signals.
+                    Hit <b>capture baseline</b> to arm the gate, then drag <b>load</b> up: when the window
+                    crosses tolerance, the <code>regressed</code> signal flips and <code>onBaselineRegression</code>
+                    fires into the log. The Profiler hot path still writes no signals.</p>
+            </div>
+        </aside>
+    </main>
+
+    <footer>
+        <div class="ctl">
+            <label for="load">LOAD</label>
+            <input type="range" id="load" min="0" max="24" step="0.5" value="6"/>
+            <span class="count" id="loadVal">6.0 ms</span>
+        </div>
+        <button id="capture" class="primary">CAPTURE BASELINE</button>
+        <button id="clear">CLEAR</button>
+        <button id="spikeBtn" class="warn">INJECT SPIKES</button>
+        <button id="pause">PAUSE</button>
+    </footer>
+</div>
+
+<script type="module">
+    import {Profiler} from '@zakkster/lite-profiler';
+    import {createProfilerView} from '@zakkster/lite-profiler-signal';
+    import {signal, effect} from '@zakkster/lite-signal';
+
+    /* ---- cached DOM refs ---- */
+    const $stage = document.querySelector('.stage');
+    const $scope = document.getElementById('scope');
+    const $run = document.getElementById('run');
+    const $gate = document.getElementById('gate');
+    const $gateState = document.getElementById('gateState');
+    const $gateSub = document.getElementById('gateSub');
+    const $fps = document.getElementById('fps');
+    const $avg = document.getElementById('avg');
+    const $p99 = document.getElementById('p99');
+    const $fmax = document.getElementById('fmax');
+    const $jank = document.getElementById('jank');
+    const $spike = document.getElementById('spike');
+    const $cls = document.getElementById('cls');
+    const $baseinfo = document.getElementById('baseinfo');
+    const $log = document.getElementById('log');
+    const $load = document.getElementById('load');
+    const $loadVal = document.getElementById('loadVal');
+    const $capture = document.getElementById('capture');
+    const $clear = document.getElementById('clear');
+    const $spikeBtn = document.getElementById('spikeBtn');
+    const $pause = document.getElementById('pause');
+
+    /* ---- constants ---- */
+    const CAP = 512;
+    const PHASES = ['compute', 'commit'];
+    const BUDGET_60 = 1000 / 60;
+    const SPIKE_BURST = 8;
+    const TOL = {'frame.avg': 0.10, 'frame.p99': 0.10, 'phase.compute.p99': 0.15, 'phase.commit.p99': 0.15};
+
+    /* ---- profiler + reactive view ---- */
+    const profiler = new Profiler(CAP, PHASES);
+    const H_COMPUTE = profiler.handle('compute');
+    const H_COMMIT = profiler.handle('commit');
+    const view = createProfilerView(profiler, {
+        intervalMs: 100,                 // ~10Hz recompute (telemetry cadence)
+        label: 'demo-workload',
+        engine: 'lite-signal@1.4.0-beta.1',
+        budgetMs: BUDGET_60,
+        tolerances: TOL
+    });
+
+    /* ---- state ---- */
+    let running = true;
+    let loadMs = +$load.value;
+    let spikeLeft = 0;
+    let sink = 0;
+    let baseP99 = 0;
+    const armed = signal(false);        // reactive: is a baseline armed?
+    let prevReg = false;
+
+    /* ---- event log ---- */
+    function logLine(kind, msg) {
+        const empty = $log.querySelector('.empty');
+        if (empty) empty.remove();
+        const line = document.createElement('div');
+        line.className = 'line';
+        line.dataset.k = kind;
+        const t = new Date();
+        const ts = String(t.getMinutes()).padStart(2, '0') + ':' + String(t.getSeconds()).padStart(2, '0');
+        line.innerHTML = '<span class="t">' + ts + '</span><span class="m"></span>';
+        line.querySelector('.m').textContent = msg;
+        $log.insertBefore(line, $log.firstChild);
+        while ($log.childElementCount > 30) $log.removeChild($log.lastChild);
+    }
+
+    /* ---- REACTIVE bindings: every panel below is driven by effect() ---- */
+
+    // the gate: bound to the `regressed` signal (plus `armed`)
+    effect(() => {
+        const reg = view.regressed();
+        const on = armed();
+        if (!on) {
+            $gate.dataset.state = 'idle';
+            $gateState.textContent = 'NO BASELINE';
+            $gateSub.textContent = 'capture a baseline, then change the load';
+            $run.dataset.run = running ? 'running' : 'paused';
+        } else if (reg) {
+            $gate.dataset.state = 'regressed';
+            $gateState.textContent = 'REGRESSED';
+            $gateSub.textContent = 'live telemetry past baseline tolerance';
+            $run.dataset.run = 'regressed';
+        } else {
+            $gate.dataset.state = 'pass';
+            $gateState.textContent = 'PASS';
+            $gateSub.textContent = 'within tolerance of baseline';
+            $run.dataset.run = running ? 'running' : 'paused';
+        }
+    });
+
+    // telemetry readouts: one effect tracks all the frame signals
+    effect(() => {
+        $fps.textContent = view.fps().toFixed(0);
+        $avg.textContent = view.frameAvg().toFixed(3);
+        $p99.textContent = view.frameP99().toFixed(3);
+        $fmax.textContent = view.frameMax().toFixed(3);
+        $jank.textContent = (view.jank() * 100).toFixed(0) + '%';
+        $spike.textContent = (view.spike() * 100).toFixed(0) + '%';
+        const c = view.frameClass();
+        $cls.textContent = c;
+        $cls.dataset.c = c;
+    });
+
+    // recovery edge (regressed -> not): onBaselineRegression only fires the other way
+    effect(() => {
+        const reg = view.regressed();
+        if (armed() && prevReg && !reg) logLine('recovered', 'recovered: back within tolerance');
+        prevReg = reg;
+    });
+
+    // the detector: fires once each time the window crosses into regressed
+    view.onBaselineRegression((report) => {
+        const names = report ? report.regressions.map((r) => r.metric).join(', ') : '(unknown)';
+        logLine('regressed', 'regressed vs baseline: ' + names);
+    });
+
+    /* ---- capture / clear ---- */
+    function capture() {
+        const s = view.captureBaseline({label: 'baseline'});
+        baseP99 = s.frame.p99;
+        $baseinfo.innerHTML =
+            'engine <b>' + s.engine + '</b><br>' +
+            'label <b>' + s.label + '</b> &middot; frames <b>' + s.frameCount + '</b><br>' +
+            'avg <b>' + s.frame.avg.toFixed(3) + 'ms</b> &middot; p99 <b>' + s.frame.p99.toFixed(3) + 'ms</b> &middot; ' +
+            'fps <b>' + s.frame.fps.toFixed(0) + '</b>';
+        armed.set(true);
+        logLine('info', 'baseline captured (' + s.frameCount + ' frames)');
+    }
+
+    function clearBaseline() {
+        view.setBaseline(null);
+        armed.set(false);
+        baseP99 = 0;
+        $baseinfo.innerHTML = '<span class="none">none captured</span>';
+        logLine('info', 'baseline cleared');
+    }
+
+    /* ---- controls ---- */
+    $load.addEventListener('input', () => {
+        loadMs = +$load.value;
+        $loadVal.textContent = loadMs.toFixed(1) + ' ms';
+    });
+    $capture.addEventListener('click', capture);
+    $clear.addEventListener('click', clearBaseline);
+    $spikeBtn.addEventListener('click', () => {
+        spikeLeft = SPIKE_BURST;
+    });
+    $pause.addEventListener('click', () => {
+        running = !running;
+        $pause.textContent = running ? 'PAUSE' : 'RESUME';
+        if (!armed() || !view.regressed()) $run.dataset.run = running ? 'running' : 'paused';
+        $run.textContent = running ? 'RUNNING' : (view.regressed() && armed() ? 'REGRESSED' : 'PAUSED');
+    });
+
+    /* ---- scope canvas ---- */
+    const ctx = $scope.getContext('2d');
+    let SW = 0, SH = 0, DPR = 1;
+    const SCALE_MS = 40;
+
+    function resizeScope() {
+        DPR = Math.min(window.devicePixelRatio || 1, 2);
+        const r = $stage.getBoundingClientRect();
+        SW = Math.max(1, r.width | 0);
+        SH = Math.max(1, r.height | 0);
+        $scope.width = (SW * DPR) | 0;
+        $scope.height = (SH * DPR) | 0;
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    }
+
+    window.addEventListener('resize', resizeScope);
+
+    const DASH = [4, 4];
+    const NODASH = [];
+
+    function yFor(ms) {
+        return SH - (Math.min(ms, SCALE_MS) / SCALE_MS) * (SH - 8) - 4;
+    }
+
+    function drawScope() {
+        ctx.clearRect(0, 0, SW, SH);
+
+        ctx.strokeStyle = 'rgba(255, 179, 0, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash(DASH);
+        ctx.beginPath();
+        const yb = yFor(BUDGET_60);
+        ctx.moveTo(0, yb);
+        ctx.lineTo(SW, yb);
+        ctx.stroke();
+
+        if (baseP99 > 0) {
+            ctx.strokeStyle = 'rgba(93, 133, 121, 0.9)';
+            ctx.beginPath();
+            const yp = yFor(baseP99);
+            ctx.moveTo(0, yp);
+            ctx.lineTo(SW, yp);
+            ctx.stroke();
+        }
+        ctx.setLineDash(NODASH);
+
+        const frame = profiler.frame;
+        const n = frame.count;
+        if (n > 1) {
+            const step = SW / (n - 1);
+            ctx.strokeStyle = '#00ffc6';
+            ctx.lineWidth = 1.25;
+            ctx.beginPath();
+            for (let k = 0; k < n; k++) {
+                const v = frame.get(n - 1 - k);
+                const x = k * step;
+                const y = yFor(v);
+                if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+    }
+
+    /* ---- synthetic controllable work ---- */
+    function burn(ms) {
+        if (ms <= 0) return;
+        const end = performance.now() + ms;
+        let acc = sink;
+        while (performance.now() < end) {
+            for (let i = 0; i < 2000; i++) acc += Math.sqrt(i * 1.000003 + acc) | 0;
+        }
+        sink = acc & 0xffff;
+    }
+
+    /* ---- main loop: profile a frame, then pulse the view (one integer tick) ---- */
+    function loop() {
+        if (running) {
+            let extra = 0;
+            if (spikeLeft > 0) {
+                extra = 22;
+                spikeLeft--;
+            }
+
+            profiler.beginFrame();
+            profiler.beginAt(H_COMPUTE);
+            burn(loadMs * 0.68 + extra);
+            profiler.endAt(H_COMPUTE);
+            profiler.beginAt(H_COMMIT);
+            burn(loadMs * 0.32);
+            profiler.endAt(H_COMMIT);
+            profiler.endFrame();
+
+            view.pulse();     // the only per-frame graph activity; the throttle gates the recompute
+            drawScope();
+        }
+        requestAnimationFrame(loop);
+    }
+
+    resizeScope();
+    $loadVal.textContent = loadMs.toFixed(1) + ' ms';
+    requestAnimationFrame(loop);
+</script>
+</body>
+</html>

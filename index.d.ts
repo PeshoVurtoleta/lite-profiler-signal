@@ -1,4 +1,4 @@
-import type { Profiler, FrameClassLabel } from '@zakkster/lite-profiler';
+import type { Profiler, FrameClassLabel, CaptureSummary, RegressionReport } from '@zakkster/lite-profiler';
 import type { Signal } from '@zakkster/lite-signal';
 
 export interface ProfilerViewOptions {
@@ -10,6 +10,14 @@ export interface ProfilerViewOptions {
   leading?: boolean;
   /** Emit the trailing value at window end. Default true. */
   trailing?: boolean;
+  /** Default workload label stamped into summaries. */
+  label?: string;
+  /** Default engine label stamped into summaries (e.g. 'lite-signal@1.4.0-beta.1'). */
+  engine?: string;
+  /** Informational frame budget in ms recorded in summaries. */
+  budgetMs?: number;
+  /** Default regression tolerances (metric path -> allowed fractional worsening). */
+  tolerances?: Record<string, number>;
 }
 
 export interface PhaseSignals {
@@ -31,6 +39,13 @@ export interface RegressionOptions {
   window?: number;
 }
 
+export interface SummaryMeta {
+  label?: string;
+  engine?: string;
+  budgetMs?: number;
+  timestamp?: number;
+}
+
 export interface ProfilerView {
   readonly fps: Signal<number>;
   readonly frameAvg: Signal<number>;
@@ -39,8 +54,22 @@ export interface ProfilerView {
   readonly jank: Signal<number>;
   readonly spike: Signal<number>;
   readonly frameClass: Signal<FrameClassLabel>;
+  /** Live: is the current window past the armed baseline's tolerances? false when no baseline. */
+  readonly regressed: Signal<boolean>;
   readonly phases: Record<string, PhaseSignals>;
   phase(tag: string): PhaseSignals | null;
+  /** Snapshot the current window as a self-describing CaptureSummary. */
+  summary(meta?: SummaryMeta): CaptureSummary;
+  /** Arm (or clear, with null) a baseline CaptureSummary for the live regressed gate. */
+  setBaseline(summary: CaptureSummary | null): CaptureSummary | null;
+  /** The armed baseline, or null. */
+  getBaseline(): CaptureSummary | null;
+  /** Replace the tolerance map used by the live gate and checkAgainstBaseline(). */
+  setTolerances(tolerances: Record<string, number> | null): Record<string, number>;
+  /** Snapshot the current window and arm it as the baseline. Returns the summary. */
+  captureBaseline(meta?: SummaryMeta): CaptureSummary;
+  /** On-demand structured regression report vs the armed baseline (null if none). */
+  checkAgainstBaseline(tolerances?: Record<string, number>): RegressionReport | null;
   /** Call once per frame, after profiler.endFrame(). One cheap tick set; the throttle gates the recompute. */
   pulse(): void;
   /** Force any pending throttled recompute to run synchronously now. */
@@ -52,6 +81,8 @@ export interface ProfilerView {
   onJank(handler: (cls: FrameClassLabel) => void): () => void;
   /** Fire when a phase's p99 exceeds `factor` times its rolling baseline. Returns a disposer. */
   onRegression(tag: string, handler: (event: RegressionEvent) => void, options?: RegressionOptions): () => void;
+  /** Fire once each time live telemetry crosses from within-budget to regressed vs the baseline. Returns a disposer. */
+  onBaselineRegression(handler: (report: RegressionReport | null) => void): () => void;
   dispose(): void;
 }
 
