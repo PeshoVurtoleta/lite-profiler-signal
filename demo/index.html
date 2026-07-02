@@ -18,7 +18,6 @@
     "@zakkster/lite-canvas-graph": "../node_modules/@zakkster/lite-canvas-graph/CanvasGraph.js"
   }
 }
-
     </script>
 
     <style>
@@ -283,6 +282,17 @@
             text-transform: uppercase;
         }
 
+        .fnote {
+            font-size: 0.6rem;
+            color: var(--muted);
+            margin: 0.5rem 0 0;
+            line-height: 1.5;
+        }
+
+        .fnote code {
+            color: var(--phosphor-dim);
+        }
+
         .flags {
             display: flex;
             gap: 1.1rem;
@@ -480,7 +490,7 @@
             <div class="panel">
                 <h2>Reactive telemetry (signals)</h2>
                 <div class="metrics">
-                    <div class="metric"><span class="v"><span id="fps">0</span><small>fps</small></span><span class="k">avg</span>
+                    <div class="metric"><span class="v"><span id="fps">0</span><small>fps</small></span><span class="k">capacity*</span>
                     </div>
                     <div class="metric"><span class="v"><span id="avg">0</span><small>ms</small></span><span class="k">frame avg</span>
                     </div>
@@ -494,6 +504,9 @@
                     <span>spike <b id="spike">0%</b></span>
                     <span class="cls" id="cls" data-c="steady">steady</span>
                 </div>
+                <p class="fnote">* the view's <code>fps</code> signal is 1000 / avg measured frame work:
+                    how often this work WOULD fit in a second (headroom), not display refresh --
+                    vsync still paints at your monitor's rate.</p>
             </div>
 
             <div class="panel">
@@ -570,19 +583,38 @@
     const view = createProfilerView(profiler, {
         intervalMs: 100,                 // ~10Hz recompute (telemetry cadence)
         label: 'demo-workload',
-        engine: 'lite-signal@1.4.0-beta.1',
+        engine: 'lite-signal',           // fallback; the real installed version is stamped per capture
         budgetMs: BUDGET_60,
         tolerances: TOL
     });
 
+    // Stamp baselines with the lite-signal version that is ACTUALLY running --
+    // a hardcoded string goes stale and misreports the engine, which defeats the
+    // whole cross-version story. Resolved once at boot from the importmap target.
+    let engineLabel = 'lite-signal';
+    fetch('../node_modules/@zakkster/lite-signal/package.json')
+        .then((r) => r.json())
+        .then((pkg) => {
+            if (pkg && pkg.version) engineLabel = 'lite-signal@' + pkg.version;
+        })
+        .catch(() => { /* keep the fallback label */
+        });
+
     /* ---- state ---- */
-    let running = true;
     let loadMs = +$load.value;
     let spikeLeft = 0;
     let sink = 0;
     let baseP99 = 0;
+    let baseLabel = '';                 // scope overlay string, rebuilt at capture
     const armed = signal(false);        // reactive: is a baseline armed?
+    const paused = signal(false);       // reactive: run/pause, so the chip is effect-driven
     let prevReg = false;
+
+    // scope overlay state -- declared BEFORE the effects below: effect() runs its
+    // body synchronously at creation, and the telemetry effect writes scaleLabel.
+    const SCALE_BASE = 24;              // minimum top-of-scale in ms
+    let scaleMsLive = SCALE_BASE;       // written by drawScope, read by the telemetry effect
+    let scaleLabel = '';                // rebuilt at ~10Hz, drawn per frame (no per-frame toFixed)
 
     /* ---- event log ---- */
     function logLine(kind, msg) {
@@ -601,26 +633,28 @@
 
     /* ---- REACTIVE bindings: every panel below is driven by effect() ---- */
 
-    // the gate: bound to the `regressed` signal (plus `armed`)
+    // the gate: bound to the `regressed` signal (plus `armed` and `paused`).
+    // The run chip is owned HERE and nowhere else -- text and state always agree.
     effect(() => {
         const reg = view.regressed();
         const on = armed();
+        const p = paused();
         if (!on) {
             $gate.dataset.state = 'idle';
             $gateState.textContent = 'NO BASELINE';
             $gateSub.textContent = 'capture a baseline, then change the load';
-            $run.dataset.run = running ? 'running' : 'paused';
         } else if (reg) {
             $gate.dataset.state = 'regressed';
             $gateState.textContent = 'REGRESSED';
             $gateSub.textContent = 'live telemetry past baseline tolerance';
-            $run.dataset.run = 'regressed';
         } else {
             $gate.dataset.state = 'pass';
             $gateState.textContent = 'PASS';
             $gateSub.textContent = 'within tolerance of baseline';
-            $run.dataset.run = running ? 'running' : 'paused';
         }
+        const chip = (on && reg) ? 'regressed' : (p ? 'paused' : 'running');
+        $run.dataset.run = chip;
+        $run.textContent = chip === 'regressed' ? 'REGRESSED' : (p ? 'PAUSED' : 'RUNNING');
     });
 
     // telemetry readouts: one effect tracks all the frame signals
@@ -634,7 +668,12 @@
         const c = view.frameClass();
         $cls.textContent = c;
         $cls.dataset.c = c;
+        // scope calibration string, rebuilt at telemetry cadence (drawn per frame from cache)
+        scaleLabel = (scaleMsLive / 4).toFixed(1) + ' ms/div (top ' + scaleMsLive.toFixed(0) + ' ms)';
     });
+
+    // the classifier watcher: fires once each time the window leaves STEADY
+    view.onJank((c) => logLine('info', 'onJank: classifier left steady (' + c + ')'));
 
     // recovery edge (regressed -> not): onBaselineRegression only fires the other way
     effect(() => {
@@ -651,22 +690,30 @@
 
     /* ---- capture / clear ---- */
     function capture() {
-        const s = view.captureBaseline({label: 'baseline'});
+        const s = view.captureBaseline({label: 'baseline', engine: engineLabel});
         baseP99 = s.frame.p99;
+        baseLabel = 'baseline p99 ' + baseP99.toFixed(2) + ' ms';
         $baseinfo.innerHTML =
             'engine <b>' + s.engine + '</b><br>' +
             'label <b>' + s.label + '</b> &middot; frames <b>' + s.frameCount + '</b><br>' +
             'avg <b>' + s.frame.avg.toFixed(3) + 'ms</b> &middot; p99 <b>' + s.frame.p99.toFixed(3) + 'ms</b> &middot; ' +
             'fps <b>' + s.frame.fps.toFixed(0) + '</b>';
         armed.set(true);
-        logLine('info', 'baseline captured (' + s.frameCount + ' frames)');
+        // force one recompute so `regressed` reflects the fresh baseline NOW --
+        // otherwise a capture while paused leaves a stale verdict on screen.
+        view.pulse();
+        view.flush();
+        logLine('info', 'baseline captured (' + s.frameCount + ' frames, ' + s.engine + ')');
     }
 
     function clearBaseline() {
         view.setBaseline(null);
         armed.set(false);
         baseP99 = 0;
+        baseLabel = '';
         $baseinfo.innerHTML = '<span class="none">none captured</span>';
+        view.pulse();
+        view.flush();
         logLine('info', 'baseline cleared');
     }
 
@@ -675,22 +722,27 @@
         loadMs = +$load.value;
         $loadVal.textContent = loadMs.toFixed(1) + ' ms';
     });
+    // slider release = new workload: clear the rolling window so the gate reads
+    // the change immediately instead of averaging it in over ~8s (baseline kept).
+    $load.addEventListener('change', () => {
+        profiler.reset();
+    });
     $capture.addEventListener('click', capture);
     $clear.addEventListener('click', clearBaseline);
     $spikeBtn.addEventListener('click', () => {
         spikeLeft = SPIKE_BURST;
     });
     $pause.addEventListener('click', () => {
-        running = !running;
-        $pause.textContent = running ? 'PAUSE' : 'RESUME';
-        if (!armed() || !view.regressed()) $run.dataset.run = running ? 'running' : 'paused';
-        $run.textContent = running ? 'RUNNING' : (view.regressed() && armed() ? 'REGRESSED' : 'PAUSED');
+        paused.set(!paused.peek());
+        $pause.textContent = paused.peek() ? 'RESUME' : 'PAUSE';
     });
 
     /* ---- scope canvas ---- */
     const ctx = $scope.getContext('2d');
     let SW = 0, SH = 0, DPR = 1;
-    const SCALE_MS = 40;
+    let scaleMs = SCALE_BASE;                  // autoscaled to the observed peak
+    const traceCopy = new Float32Array(CAP);   // one memcpy per frame instead of N get() calls
+    let scopeFont = '600 11px ui-monospace, monospace';
 
     function resizeScope() {
         DPR = Math.min(window.devicePixelRatio || 1, 2);
@@ -702,17 +754,34 @@
         ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     }
 
-    window.addEventListener('resize', resizeScope);
+    window.addEventListener('resize', () => {
+        resizeScope();
+        if (paused.peek()) drawScope();        // a resize wipes the canvas; repaint the frozen trace
+    });
 
     const DASH = [4, 4];
     const NODASH = [];
 
     function yFor(ms) {
-        return SH - (Math.min(ms, SCALE_MS) / SCALE_MS) * (SH - 8) - 4;
+        return SH - (Math.min(ms, scaleMs) / scaleMs) * (SH - 8) - 4;
     }
 
     function drawScope() {
         ctx.clearRect(0, 0, SW, SH);
+
+        // pull the window once (oldest-first), find the peak, autoscale so
+        // neither spikes nor the baseline line ever clip off the top
+        const n = profiler.frame.copyTo(traceCopy, 0);
+        let peak = 0;
+        for (let k = 0; k < n; k++) {
+            const v = traceCopy[k];
+            if (v > peak) peak = v;
+        }
+        let s = SCALE_BASE;
+        if (peak * 1.15 > s) s = peak * 1.15;
+        if (baseP99 * 1.15 > s) s = baseP99 * 1.15;
+        scaleMs = s;
+        scaleMsLive = s;
 
         ctx.strokeStyle = 'rgba(255, 179, 0, 0.5)';
         ctx.lineWidth = 1;
@@ -730,23 +799,33 @@
             ctx.moveTo(0, yp);
             ctx.lineTo(SW, yp);
             ctx.stroke();
+            ctx.setLineDash(NODASH);
+            ctx.fillStyle = 'rgba(93, 133, 121, 0.9)';
+            ctx.font = scopeFont;
+            ctx.textAlign = 'right';
+            ctx.fillText(baseLabel, SW - 8, yp - 4);
         }
         ctx.setLineDash(NODASH);
 
-        const frame = profiler.frame;
-        const n = frame.count;
         if (n > 1) {
             const step = SW / (n - 1);
             ctx.strokeStyle = '#00ffc6';
             ctx.lineWidth = 1.25;
             ctx.beginPath();
             for (let k = 0; k < n; k++) {
-                const v = frame.get(n - 1 - k);
                 const x = k * step;
-                const y = yFor(v);
+                const y = yFor(traceCopy[k]);
                 if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
             }
             ctx.stroke();
+        }
+
+        // calibration (string cached at ~10Hz by the telemetry effect)
+        if (scaleLabel !== '') {
+            ctx.fillStyle = 'rgba(93, 133, 121, 0.9)';
+            ctx.font = scopeFont;
+            ctx.textAlign = 'left';
+            ctx.fillText(scaleLabel, 8, SH - 8);
         }
     }
 
@@ -763,7 +842,7 @@
 
     /* ---- main loop: profile a frame, then pulse the view (one integer tick) ---- */
     function loop() {
-        if (running) {
+        if (!paused.peek()) {
             let extra = 0;
             if (spikeLeft > 0) {
                 extra = 22;
